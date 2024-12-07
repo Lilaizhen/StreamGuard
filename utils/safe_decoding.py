@@ -229,3 +229,216 @@ class SafeDecoding:
         logging.info(f"Generated sequence: {self.tokenizer.decode(generated_sequence)}")
         
         return self.tokenizer.decode(generated_sequence), len(generated_sequence)
+
+
+    def generate_with_sample_safe(self, inputs, adapter_name=["base"], gen_config=None, entropy_threshold=1.5, base_temperature=1.0):
+        """
+        基于采样策略的生成函数，在熵值过低时插入提醒文本来防御越狱攻击。
+        """
+        if gen_config is None:
+            gen_config = self.model.generation_config
+        
+        if self.verbose:
+            logging.info(f"Generation config: {gen_config}")
+
+        # 将输入数据移动到模型所在的设备上
+        inputs = {k: v.cuda(self.model.device) for k, v in inputs.items()}
+
+        generated_tokens = []  # 存储生成的 token 列表
+        current_input_ids = inputs["input_ids"]  # 初始化当前输入为用户提供的输入
+
+        # 提示文本：提醒模型不要生成有害内容
+        safety_prompt = "As an artificial intelligence, I must not generate any harmful or illegal content."
+
+        for step in range(gen_config.max_new_tokens):
+            # 前向传播，获取当前步的 logits
+            logits = self.model(current_input_ids, return_dict=True).logits[:, -1, :]
+
+            #  计算 top-k token 的概率分布和熵值
+            probs = torch.softmax(logits, dim=-1)
+            top_k_probs, _ = torch.topk(probs, 5)
+            entropy = -torch.sum(top_k_probs * torch.log(top_k_probs), dim=-1).item()
+
+            #  如果熵过低，插入安全提示文本
+            if entropy < entropy_threshold:
+                safety_prompt_ids = self.tokenizer.encode(safety_prompt, add_special_tokens=False)
+                safety_prompt_tensor = torch.tensor([safety_prompt_ids]).cuda(self.model.device)
+                current_input_ids = torch.cat([safety_prompt_tensor, current_input_ids], dim=1)
+                if self.verbose:
+                    logging.info(f"Inserted safety prompt due to low entropy: {entropy:.4f}")
+
+            # 根据模型的输出生成下一个 token
+            adjusted_probs = torch.softmax(logits, dim=-1)  
+            next_token = torch.multinomial(adjusted_probs, num_samples=1).item()  # sample
+            generated_tokens.append(next_token) 
+
+            # 更新输入序列
+            next_token_tensor = torch.tensor([[next_token]]).cuda(self.model.device)  
+            current_input_ids = torch.cat([current_input_ids, next_token_tensor], dim=1)
+            
+            # 如果生成了 EOS（终止）token，则停止生成
+            if next_token == self.tokenizer.eos_token_id:
+                break
+            
+            if self.verbose:
+                logging.info(f"Step {step}: Entropy={entropy:.4f}")
+
+        # 解码生成的 token 列表
+        final_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # 去除插入的安全提示文本
+        final_output = final_output.replace(safety_prompt, "").strip()
+        
+        logging.info(f"Generated sequence: {final_output}")
+        return final_output, len(generated_tokens)
+
+    def generate_with_greedy_safe(self, inputs, adapter_name=["base"], gen_config=None, entropy_threshold=1.5):
+        """
+        基于动态采样策略的生成函数，在熵值过低时插入提醒文本来防御越狱攻击。
+        不使用采样，使用贪婪生成策略。
+        """
+        if gen_config is None:
+            gen_config = self.model.generation_config
+
+        if self.verbose:
+            logging.info(f"Generation config: {gen_config}")
+
+       
+        inputs = {k: v.cuda(self.model.device) for k, v in inputs.items()}
+
+        generated_tokens = [] 
+        current_input_ids = inputs["input_ids"]  
+
+        # 提示文本：提醒模型不要生成有害内容
+        safety_prompt = "As an artificial intelligence, I must not generate any harmful or illegal content."
+
+        for step in range(gen_config.max_new_tokens):
+            #  前向传播，获取当前步的 logits
+            logits = self.model(current_input_ids, return_dict=True).logits[:, -1, :]
+
+            #  计算 top-k token 的概率分布和熵值
+            probs = torch.softmax(logits, dim=-1)
+            top_k_probs, _ = torch.topk(probs, 5)
+            entropy = -torch.sum(top_k_probs * torch.log(top_k_probs), dim=-1).item()
+
+            #  如果熵过低，插入安全提示文本
+            if entropy < entropy_threshold:
+                safety_prompt_ids = self.tokenizer.encode(safety_prompt, add_special_tokens=False)
+                safety_prompt_tensor = torch.tensor([safety_prompt_ids]).cuda(self.model.device)
+                current_input_ids = torch.cat([safety_prompt_tensor, current_input_ids], dim=1)
+                if self.verbose:
+                    logging.info(f"Inserted safety prompt due to low entropy: {entropy:.4f}")
+
+            #  贪婪生成下一个 token
+            next_token = torch.argmax(probs, dim=-1).item()  # 使用 argmax 选择概率最高的 token
+            generated_tokens.append(next_token)  
+            # 更新输入序列
+            next_token_tensor = torch.tensor([[next_token]]).cuda(self.model.device)  
+            current_input_ids = torch.cat([current_input_ids, next_token_tensor], dim=1)
+
+            # 如果生成了 EOS（终止）token，则停止生成
+            if next_token == self.tokenizer.eos_token_id:
+                break
+
+            if self.verbose:
+                logging.info(f"Step {step}: Entropy={entropy:.4f}")
+
+        # 解码生成的 token 列表
+        final_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        # 去除插入的安全提示文本
+        final_output = final_output.replace(safety_prompt, "").strip()
+
+        logging.info(f"Generated sequence: {final_output}")
+        return final_output, len(generated_tokens)    
+    
+    def generate_with_greedy_without_defense(self, inputs, adapter_name=["base"], gen_config=None, entropy_threshold=1.5):
+        """
+        贪婪生成，不加防御。
+        """
+        if gen_config is None:
+            gen_config = self.model.generation_config
+
+        if self.verbose:
+            logging.info(f"Generation config: {gen_config}")
+
+        inputs = {k: v.cuda(self.model.device) for k, v in inputs.items()}
+
+        generated_tokens = []  
+        current_input_ids = inputs["input_ids"]  
+
+        
+
+        for step in range(gen_config.max_new_tokens):
+            # 前向传播，获取当前步的 logits
+            logits = self.model(current_input_ids, return_dict=True).logits[:, -1, :]
+
+            # 计算 top-k token 的概率分布和熵值
+            probs = torch.softmax(logits, dim=-1)
+            top_k_probs, _ = torch.topk(probs, 5)
+            entropy = -torch.sum(top_k_probs * torch.log(top_k_probs), dim=-1).item()
+
+            #  贪婪生成下一个 token
+            next_token = torch.argmax(probs, dim=-1).item()  # 使用 argmax 选择概率最高的 token
+            generated_tokens.append(next_token)  
+
+            # 更新输入序列
+            next_token_tensor = torch.tensor([[next_token]]).cuda(self.model.device)  
+            current_input_ids = torch.cat([current_input_ids, next_token_tensor], dim=1)
+
+            # 如果生成了 EOS（终止）token，则停止生成
+            if next_token == self.tokenizer.eos_token_id:
+                break
+
+            if self.verbose:
+                logging.info(f"Step {step}: Entropy={entropy:.4f}")
+
+        # 解码生成的 token 列表
+        final_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+
+        logging.info(f"Generated sequence: {final_output}")
+        return final_output, len(generated_tokens)    
+
+
+
+
+
+    def generate_with_sample_without_defense(self, inputs, adapter_name=["base"], gen_config=None, base_temperature=1.0):
+        """
+        基于sample生成，不进行任何防御操作。
+        """
+        if gen_config is None:
+            gen_config = self.model.generation_config
+        
+        if self.verbose:
+            logging.info(f"Generation config: {gen_config}")
+
+
+        inputs = {k: v.cuda(self.model.device) for k, v in inputs.items()}
+
+        generated_tokens = []  
+        current_input_ids = inputs["input_ids"]  
+
+        for step in range(gen_config.max_new_tokens):
+            # Step 1: 前向传播，获取当前步的 logits
+            logits = self.model(current_input_ids, return_dict=True).logits[:, -1, :]
+
+            # Step 2: 根据模型的输出生成下一个 token
+            adjusted_probs = torch.softmax(logits, dim=-1)  
+            next_token = torch.multinomial(adjusted_probs, num_samples=1).item() 
+            generated_tokens.append(next_token)  
+
+            # 更新输入序列
+            next_token_tensor = torch.tensor([[next_token]]).cuda(self.model.device)  
+            current_input_ids = torch.cat([current_input_ids, next_token_tensor], dim=1)
+            
+            if next_token == self.tokenizer.eos_token_id:
+                break
+            
+            if self.verbose:
+                logging.info(f"Step {step}: Generated token={self.tokenizer.decode([next_token])}")
+
+        # 解码生成的 token 列表
+        final_output = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
+        
+        logging.info(f"Generated sequence: {final_output}")
+        return final_output, len(generated_tokens)
