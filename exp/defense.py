@@ -355,6 +355,46 @@ for prompt in tqdm(attack_prompts):
                 whitebox_attacker=whitebox_attacker)
             inputs = input_manager.get_inputs()
             outputs, output_length = safe_decoder.generate_with_sample_without_defense(inputs, gen_config=gen_config)
+
+        elif args.defender == "sample":
+            input_manager = PromptManager(tokenizer=tokenizer, 
+                conv_template=conv_template, 
+                instruction=user_prompt,
+                whitebox_attacker=whitebox_attacker)
+            inputs = input_manager.get_inputs()
+            outputs, output_length = safe_decoder.sample(inputs, gen_config=gen_config)
+
+        elif args.defender == "nodefense":
+            input_manager = PromptManager(tokenizer=tokenizer, 
+                conv_template=conv_template, 
+                instruction=user_prompt,
+                whitebox_attacker=whitebox_attacker)
+            inputs = input_manager.get_inputs()
+            outputs, output_length = safe_decoder.nodefense(inputs, gen_config=gen_config)
+
+        elif args.defender == "wait":
+            input_manager = PromptManager(tokenizer=tokenizer, 
+                conv_template=conv_template, 
+                instruction=user_prompt,
+                whitebox_attacker=whitebox_attacker)
+            inputs = input_manager.get_inputs()
+            outputs, output_length = safe_decoder.wait(inputs, gen_config=gen_config)
+
+        elif args.defender == "semantic_smoothing":
+            input_manager = PromptManager(tokenizer=tokenizer, 
+                conv_template=conv_template, 
+                instruction=user_prompt,
+                whitebox_attacker=whitebox_attacker)
+            inputs = input_manager.get_inputs()
+            safe_decoder = SafeDecoding(model, 
+                            tokenizer, 
+                            "base", 
+                            alpha=args.alpha, 
+                            first_m=args.first_m, 
+                            top_k=args.top_k, 
+                            num_common_tokens=args.num_common_tokens,
+                            verbose=args.verbose)
+            outputs, output_length = safe_decoder.semantic_smoothing(inputs, gen_config=gen_config)
         
         elif args.defender == "ICD":
             input_manager = PromptManager(tokenizer=tokenizer, 
