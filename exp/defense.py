@@ -38,6 +38,9 @@ def get_args():
     parser.add_argument("--ppl_threshold", type=float, default=175.57, help="PPL threshold for PPL defense (Default: 175.56716547041594 from advbench-50)")
     parser.add_argument("--BPO_dropout_rate", type=float, default=0.2, help="BPE Dropout rate for Retokenization defense (Default: 0.2)")
     parser.add_argument("--paraphase_model", type=str, default="gpt-3.5-turbo-1106")
+    # wait defense method
+    parser.add_argument("--insert_text", type=str, default='wait!')
+    parser.add_argument("--insert_posi", type=int, default=5)
 
     # System Settings
     parser.add_argument("--device", type=str, default="0")
@@ -378,7 +381,7 @@ for prompt in tqdm(attack_prompts):
                 instruction=user_prompt,
                 whitebox_attacker=whitebox_attacker)
             inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.wait(inputs, gen_config=gen_config)
+            outputs, output_length = safe_decoder.wait(inputs, gen_config=gen_config,insert_text=args.insert_text, insert_posi=args.insert_posi)
 
         elif args.defender == "semantic_smoothing":
             input_manager = PromptManager(tokenizer=tokenizer, 
