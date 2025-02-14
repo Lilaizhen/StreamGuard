@@ -120,6 +120,14 @@ model, tokenizer = load_model_and_tokenizer(model_name,
                        do_sample=False,
                        device=device)
 
+if args.defender == "wait":
+    safe_model = load_model_and_tokenizer(model_name, 
+                       FP16=args.FP16,
+                       low_cpu_mem_usage=args.low_cpu_mem_usage,
+                       use_cache=args.use_cache,
+                       do_sample=False,
+                       device=device)
+
 # model = PeftModel.from_pretrained(model, "../lora_modules/"+args.model_name, adapter_name="expert")
 adapter_names = ['base', 'expert']
 print(111111111111111)
@@ -341,97 +349,15 @@ for prompt in tqdm(attack_prompts):
             inputs = input_manager.get_inputs()
             outputs, output_length = safe_decoder.generate_baseline(inputs, gen_config=gen_config)
 
- 
 
-        elif args.defender == "generate_with_sample_safe":
+        elif args.defender == "ExtraThink":
             input_manager = PromptManager(tokenizer=tokenizer, 
                 conv_template=conv_template, 
                 instruction=user_prompt,
                 whitebox_attacker=whitebox_attacker)
             inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.generate_with_sample_safe(inputs, gen_config=gen_config)
-
-        elif args.defender == "generate_with_greedy_safe":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.generate_with_greedy_safe(inputs, gen_config=gen_config)
-
-        elif args.defender == "generate_with_greedy_without_defense":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.generate_with_greedy_without_defense(inputs, gen_config=gen_config)
-        
-        elif args.defender == "generate_with_sample_without_defense":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.generate_with_sample_without_defense(inputs, gen_config=gen_config)
-
-        elif args.defender == "sample":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.sample(inputs, gen_config=gen_config)
-
-        elif args.defender == "nodefense":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.nodefense(inputs, gen_config=gen_config)
-        
-        elif args.defender == "entropy":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.entropy(inputs, gen_config=gen_config, insert_text=args.insert_text, entropy_threshold=args.entropy_threshold)
-
-        elif args.defender == "wait":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs()
-            outputs, output_length = safe_decoder.wait(inputs, gen_config=gen_config,insert_text=args.insert_text, insert_posi=args.insert_posi, model_name=args.model_name)
-
-        elif args.defender == "check":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs() 
-            outputs, output_length = safe_decoder.check(inputs, gen_config=gen_config ,first_m= args.first_m_token ,per_n= args.per_n)
-
-
-        elif args.defender == "semantic_smoothing":
-            input_manager = PromptManager(tokenizer=tokenizer, 
-                conv_template=conv_template, 
-                instruction=user_prompt,
-                whitebox_attacker=whitebox_attacker)
-            inputs = input_manager.get_inputs()
-            safe_decoder = SafeDecoding(model, 
-                            tokenizer, 
-                            "base", 
-                            alpha=args.alpha, 
-                            first_m=args.first_m, 
-                            top_k=args.top_k, 
-                            num_common_tokens=args.num_common_tokens,
-                            verbose=args.verbose)
-            outputs, output_length = safe_decoder.semantic_smoothing(inputs, gen_config=gen_config)
-        
+            outputs, output_length = safe_decoder.wait(inputs, gen_config=gen_config,insert_text=args.insert_text, insert_posi=args.insert_posi, model_name=args.model_name ,safe_model=safe_model)
+    
         elif args.defender == "ICD":
             input_manager = PromptManager(tokenizer=tokenizer, 
                 conv_template=conv_template, 

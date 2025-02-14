@@ -19,6 +19,7 @@ def load_model_and_tokenizer(model_path, FP16 = True, tokenizer_path=None, devic
     else:
         model = AutoModelForCausalLM.from_pretrained(
                 model_path,
+                torch_dtype=torch.bfloat16,
                 trust_remote_code=True,
                 **kwargs
             ).to(device).eval()

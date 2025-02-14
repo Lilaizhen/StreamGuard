@@ -8,7 +8,7 @@ from peft import PeftModel, PeftModelForCausalLM
 # from utils.llm_jailbreaking_defense.defenses.semantic_smoothing import SemanticSmoothConfig,SemanticSmoothDefense
 # from utils.llm_jailbreaking_defense.models import TargetLM
 from openai import OpenAI
-
+from copy import deepcopy
 
 class SafeDecoding:
     def __init__(self, model, tokenizer, adapter_names, alpha=1, first_m=10, top_k = 10, num_common_tokens = 3, verbose=False):
@@ -236,137 +236,17 @@ class SafeDecoding:
 
 
 
+    def wait(self, inputs, gen_config=None, insert_text=None, insert_posi=10, model_name=None, safe_model=None):
 
-    def nodefense(self, inputs, gen_config=None):
-        # 如果没有传入生成配置，则使用模型的默认生成配置
-        if gen_config is None:
-            gen_config = self.model.generation_config
-
-        max_token_len = gen_config.max_new_tokens
-        do_sample = gen_config.do_sample
-        gen_config.max_new_tokens = 1
-        gen_config.do_sample = False
-
-        generated_sequence = []
-        if self.verbose:
-            logging.info(f"Generation config: {gen_config}")
-
-        inputs = {k: v.cuda(self.model.device) for k, v in inputs.items()}
-        input_len = inputs['input_ids'].shape[1]
-
-        step = 1
-        # 在前first_m步中进行逐token生成
-        while step <= min(max_token_len, 10):
-            outputs = self.model.generate(**inputs,
-                                        adapter_names=["base"],
-                                        generation_config=gen_config,
-                                        pad_token_id=self.tokenizer.pad_token_id,
-                                        return_dict_in_generate=True,
-                                        output_scores=True)
-
-            # 从模型输出中获取最后一步的得分（logits）
-            scores_base = outputs.scores[-1].squeeze(0)
-            scores_base = torch.nn.functional.log_softmax(scores_base, dim=-1)
-
-            # 获取top-k个得分最高的token
-            k = self.top_k
-            topk_scores_base, topk_indices_base = scores_base.topk(k)
-
-            # 如果是第一步且verbose开启，打印基础模型的top-k结果
-            if self.verbose and step <=10:
-                logging.info("\n-----------------------------------------------")
-                logging.info(f"Generation Step {step}")
-                logging.info("|No. | Token ID | Token   | Log Prob | Prob    |")
-                logging.info("|----|----------|---------|----------|---------|")
-
-                for idx, (score, token_id) in enumerate(zip(topk_scores_base, topk_indices_base)):
-                    token = self.tokenizer.decode(token_id.item())
-                    prob = torch.exp(score)
-                    logging.info(f"{idx+1:4d} | {token_id:8d} | {token:7s} | {score:.3f}    | {prob:.2%} |")
-
-            # 根据是否采样来决定选取下一个token的策略
-            if not do_sample:
-                selected_token_id = topk_indices_base[0].unsqueeze(0)
-            else:
-                # 如果进行采样（top-p采样或核采样），按得分的概率分布进行抽样
-                sorted_indices = torch.argsort(scores_base, descending=True)
-                sorted_scores = scores_base[sorted_indices]
-                sorted_probs = torch.exp(sorted_scores)
-                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-
-                cutoff_idx = (cumulative_probs >= gen_config.top_p).nonzero(as_tuple=True)[0]
-                if len(cutoff_idx) > 0:
-                    cutoff_idx = cutoff_idx[0].item()
-                else:
-                    cutoff_idx = len(sorted_probs) - 1
-
-                # 截取top-p集合的tokens与对应的得分
-                sorted_top_p_token_ids = sorted_indices[:cutoff_idx+1]
-                sorted_top_p_scores = sorted_scores[:cutoff_idx+1]
-
-                # 从top-p集合中按softmax概率进行抽样，选择一个token
-                selected_token_id = sorted_top_p_token_ids[torch.multinomial(
-                    torch.softmax(sorted_top_p_scores, dim=-1), 1
-                )].unsqueeze(0)
-
-            if self.verbose:
-                logging.info(f"已选定的Token: {self.tokenizer.decode(selected_token_id.item())}, ID: {selected_token_id.item()}")
-
-            generated_sequence.append(selected_token_id.item())
-
-            # 如果选定的token是EOS（结束符），则提前停止生成
-            if selected_token_id.item() == self.tokenizer.eos_token_id:
-                break
-
-            # 将已生成的token添加到输入中，以便下一次生成使用
-            inputs['input_ids'] = torch.cat([inputs['input_ids'], selected_token_id.unsqueeze(0)], dim=1)
-            inputs['attention_mask'] = torch.cat(
-                [inputs['attention_mask'], torch.tensor([[1]], device=self.model.device)], dim=1
-            )
-
-            step += 1
-
-            del outputs
-
-        # 如果在first_m步中没有生成EOS，则继续正常生成剩余的token
-        if len(generated_sequence) == 0 or generated_sequence[-1] != self.tokenizer.eos_token_id:
-
-            remaining_steps = max_token_len - min(max_token_len, self.first_m)
-            gen_config.max_new_tokens = remaining_steps
-            gen_config.do_sample = do_sample
-
-            # 使用模型生成剩余的tokens
-            output_base = self.model.generate(**inputs,
-                                            adapter_names=["base"],
-                                            generation_config=gen_config,
-                                            pad_token_id=self.tokenizer.pad_token_id,
-                                            return_dict_in_generate=True,
-                                            output_scores=True)
-
-
-            generated_sequence = output_base.sequences[0].tolist()[input_len:]
-
-
-        logging.info(f"生成的序列: {self.tokenizer.decode(generated_sequence)}")
-
-
-        return self.tokenizer.decode(generated_sequence), len(generated_sequence)
-
-
-
-
-
-
-
-    def wait(self, inputs, gen_config=None, insert_text=None, insert_posi=10, model_name=None):
-
-        if model_name == "llama3.1" :
-            insert_text="\\n<|start_header_id|>user<|end_header_id|>\\nYou need to spend more time thinking about whether the request is legal and harmless. If it's harmful, please reject the request directly.<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
-        elif model_name == "qwen2.5" :
-            insert_text="\n<|im_start|>user\nYou need to spend more time thinking about whether the request is legal and harmless. But do not output the thinking process. If it's harmful, please say \" ...Sorry, I can't assist.\" and explain the reason. <|im_end|>\n<|im_start|>assistant\n"
-        else :
+        # Set insert text based on model name
+        if model_name == "llama3.1":
+            insert_text = "\n<|start_header_id|>user<|end_header_id|>\nYou need to spend more time thinking about whether the request is legal and harmless. If it's harmful, please reject the request directly. If it's harmless, please continue answering the previous question.<|eot_id|><|start_header_id>assistant<|end_header_id|>\n"
+        elif model_name == "qwen2.5":
+            insert_text = "\n<|im_start|>user\nYou need to spend more time thinking about whether the request is legal and harmless. If it's harmful, please say \" ...Sorry, I can't assist.\" and explain the reason. If it's harmless, please continue answering the previous question.<|im_end|>\n<|im_start|>assistant\n"
+        else:
             raise ValueError("Invalid model name.")
         
+        # Set default generation config if not provided
         if gen_config is None:
             gen_config = self.model.generation_config
 
@@ -378,42 +258,41 @@ class SafeDecoding:
         gen_config.use_cache = False
 
         generated_sequence = []
-        insert_sequence = []  # 用于存储插入的文本的token ID，稍后从最终结果中剔除
-        insert_positions = []  # 用于记录插入文本在生成序列中的位置
+        insert_sequence = []
+        insert_positions = []
+
         if self.verbose:
             logging.info(f"Generation config: {gen_config}")
-
 
         inputs = {k: v.cuda(self.model.device) for k, v in inputs.items()}
         input_len = inputs['input_ids'].shape[1]
 
         step = 1
-        while step <= min(max_token_len, 12):
+
+        while step <= min(max_token_len, 20):
 
             if step == insert_posi:
                 
+                # Combine current input text with generated text for safety check
                 current_text = self.tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=True)
                 generated_text = self.tokenizer.decode(generated_sequence, skip_special_tokens=True)
                 combined_text = f"{current_text} {generated_text}"
 
-                # 使用模型检查安全性
-                is_safe = self.check_safety_with_model(combined_text ,model_name)
-                # is_safe=False #test
-                if is_safe == False :
+                # Safety check with model
+                is_safe = self.check_safety_with_model(safe_model, combined_text, model_name)
 
-                    insert_ids = self.tokenizer.encode(insert_text, add_special_tokens=False)  # 将文本编码为token ID
-                    inputs['input_ids'] = torch.cat([inputs['input_ids'], torch.tensor(insert_ids, device=self.model.device).unsqueeze(0)], dim=1)  # 将插入的token加入输入中
-                    inputs['attention_mask'] = torch.cat([inputs['attention_mask'], torch.ones(1, len(insert_ids), device=self.model.device)], dim=1)  # 更新attention mask
-                    insert_sequence.extend(insert_ids)  # 记录插入的文本
-                    insert_positions.append(len(generated_sequence))  # 记录插入文本的位置
-                    # text = self.tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=False)
-                    # print(f"<<<{text}>>>")
-                    generated_sequence.extend(insert_ids)  # 添加插入的 token 到生成序列
-                    logging.info(f"在第{step}个token时插入文本: {insert_text}")  # 打印插入的文本
+                # If not safe, insert safety message
+                if is_safe == False:
+                    insert_ids = self.tokenizer.encode(insert_text, add_special_tokens=False) 
+                    inputs['input_ids'] = torch.cat([inputs['input_ids'], torch.tensor(insert_ids, device=self.model.device).unsqueeze(0)], dim=1)
+                    inputs['attention_mask'] = torch.cat([inputs['attention_mask'], torch.ones(1, len(insert_ids), device=self.model.device)], dim=1)
+                    insert_sequence.extend(insert_ids)
+                    insert_positions.append(len(generated_sequence))
+                    generated_sequence.extend(insert_ids)
+                    logging.info(f"Inserted text at step {step}: {insert_text}")
 
-            # 使用基础模型进行下一步token生成（单步）
+            # Generate next token
             outputs = self.model.generate(**inputs,
-                                        # adapter_names=["base"],
                                         generation_config=gen_config,
                                         pad_token_id=self.tokenizer.pad_token_id,
                                         return_dict_in_generate=True,
@@ -435,6 +314,7 @@ class SafeDecoding:
                     prob = torch.exp(score)
                     logging.info(f"{idx+1:4d} | {token_id:8d} | {token:7s} | {score:.3f}    | {prob:.2%} |")
 
+            # Select token based on sampling or greedy approach
             if not do_sample:
                 selected_token_id = topk_indices_base[0].unsqueeze(0)
             else:
@@ -456,35 +336,30 @@ class SafeDecoding:
                 )].unsqueeze(0)
 
             if self.verbose:
-                logging.info(f"已选定的Token: {self.tokenizer.decode(selected_token_id.item())}, ID: {selected_token_id.item()}")
-
-            
+                logging.info(f"Selected Token: {self.tokenizer.decode(selected_token_id.item())}, ID: {selected_token_id.item()}")
 
             generated_sequence.append(selected_token_id.item())
 
-            # 如果选定的token是EOS（结束符），则提前停止生成
+            # Stop generation if EOS token is reached
             if selected_token_id.item() == self.tokenizer.eos_token_id:
                 break
 
-            # 将已生成的token添加到输入中，以便下一次生成使用
+            # Add selected token to input for next generation
             inputs['input_ids'] = torch.cat([inputs['input_ids'], selected_token_id.unsqueeze(0)], dim=1)
-            inputs['attention_mask'] = torch.cat(
-                [inputs['attention_mask'], torch.tensor([[1]], device=self.model.device)], dim=1
-            )
+            inputs['attention_mask'] = torch.cat([inputs['attention_mask'], torch.tensor([[1]], device=self.model.device)], dim=1)
 
             step += 1
 
-            # 释放内存
+            # Free memory
             del outputs
 
-        # 如果在first_m步中没有生成EOS，那么继续正常生成剩余的token
+        # If EOS is not generated within the first few steps, continue generation
         if len(generated_sequence) == 0 or generated_sequence[-1] != self.tokenizer.eos_token_id:
             remaining_steps = max_token_len - min(max_token_len, self.first_m)
             gen_config.max_new_tokens = remaining_steps
             gen_config.do_sample = do_sample
-
+            
             output_base = self.model.generate(**inputs,
-                                            # adapter_names=["base"],
                                             generation_config=gen_config,
                                             pad_token_id=self.tokenizer.pad_token_id,
                                             return_dict_in_generate=True,
@@ -492,228 +367,70 @@ class SafeDecoding:
 
             generated_sequence = output_base.sequences[0].tolist()[input_len:]
 
-        # 从生成序列中删除插入的token
+        # Remove inserted tokens from the generated sequence
         start_pos = insert_positions[0] if insert_positions else 0
         generated_sequence = generated_sequence[:start_pos] + generated_sequence[start_pos+len(insert_sequence):] if insert_sequence else generated_sequence
 
-        logging.info(f"生成的序列: {self.tokenizer.decode(generated_sequence)}")
+        logging.info(f"Generated sequence: {self.tokenizer.decode(generated_sequence)}")
 
         return self.tokenizer.decode(generated_sequence), len(generated_sequence)
 
-    def check(self, inputs, gen_config=None, first_m=12 ,per_n=10 ,insert_text="\\n<|start_header_id|>user<|end_header_id|>\\nYou need to spend more time thinking about whether the request is legal and harmless. If it's harmful, please reject the request directly.<|eot_id|><|start_header_id|>assistant<|end_header_id|>"):
-        if gen_config is None:
-            gen_config = self.model.generation_config
-
-        max_token_len = gen_config.max_new_tokens
-        do_sample = gen_config.do_sample
-
-        gen_config.max_new_tokens = 1
-        gen_config.do_sample = False
-        gen_config.use_cache = False
-
-        generated_sequence = []
-        insert_sequence = []  # 用于存储插入的文本的token ID，稍后从最终结果中剔除
-        insert_positions = []  # 用于记录插入文本在生成序列中的位置
-        is_inserted = False
-
-        if self.verbose:
-            logging.info(f"Generation config: {gen_config}")
 
 
-        inputs = {k: v.cuda(self.model.device) for k, v in inputs.items()}
-        input_len = inputs['input_ids'].shape[1]
 
-        step = 1
-        while step <= min(max_token_len, first_m):
-
-            if step % per_n == 0:
-                current_text = self.tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=True)
-                generated_text = self.tokenizer.decode(generated_sequence, skip_special_tokens=True)
-                combined_text = f"{current_text} {generated_text}"
-
-                # 使用模型检查安全性
-                is_safe = self.check_safety_with_model(combined_text)
-
-                # 打印或日志记录安全性检查的结果
-                logging.info(f"Step {step}: Combined Text: {combined_text}")
-                logging.info(f"Step {step}: Safety Check: {'Safe' if is_safe else 'Unsafe'}")
-                
-                if not is_safe and is_inserted == False:
-                    insert_ids = self.tokenizer.encode(insert_text, add_special_tokens=False)  # 将文本编码为token ID
-                    inputs['input_ids'] = torch.cat([inputs['input_ids'], torch.tensor(insert_ids, device=self.model.device).unsqueeze(0)], dim=1)  # 将插入的token加入输入中
-                    inputs['attention_mask'] = torch.cat([inputs['attention_mask'], torch.ones(1, len(insert_ids), device=self.model.device)], dim=1)  # 更新attention mask
-                    insert_sequence.extend(insert_ids)  # 记录插入的文本
-                    insert_positions.append(len(generated_sequence))  # 记录插入文本的位置
-                    # text = self.tokenizer.decode(inputs['input_ids'][0], skip_special_tokens=False)
-                    # print(f"<<<{text}>>>")
-                    generated_sequence.extend(insert_ids)  # 添加插入的 token 到生成序列
-                    logging.info(f"在第{step}个token时插入文本: {insert_text}")  # 打印插入的文本
-                    is_inserted = True
-
-            # 使用基础模型进行下一步token生成（单步）
-            outputs = self.model.generate(**inputs,
-                                        # adapter_names=["base"],
-                                        generation_config=gen_config,
-                                        pad_token_id=self.tokenizer.pad_token_id,
-                                        return_dict_in_generate=True,
-                                        output_scores=True)
-
-            scores_base = outputs.scores[-1].squeeze(0)
-            scores_base = torch.nn.functional.log_softmax(scores_base, dim=-1)
-
-            k = self.top_k
-            topk_scores_base, topk_indices_base = scores_base.topk(k)
-
-            if self.verbose and step <= 10:
-                logging.info("\n-----------------------------------------------")
-                logging.info(f"Generation Step {step}")
-                logging.info("|No. | Token ID | Token   | Log Prob | Prob    |")
-                logging.info("|----|----------|---------|----------|---------|")
-                for idx, (score, token_id) in enumerate(zip(topk_scores_base, topk_indices_base)):
-                    token = self.tokenizer.decode(token_id.item())
-                    prob = torch.exp(score)
-                    logging.info(f"{idx+1:4d} | {token_id:8d} | {token:7s} | {score:.3f}    | {prob:.2%} |")
-
-            if not do_sample:
-                selected_token_id = topk_indices_base[0].unsqueeze(0)
-            else:
-                sorted_indices = torch.argsort(scores_base, descending=True)
-                sorted_scores = scores_base[sorted_indices]
-                sorted_probs = torch.exp(sorted_scores)
-                cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
-                cutoff_idx = (cumulative_probs >= gen_config.top_p).nonzero(as_tuple=True)[0]
-                if len(cutoff_idx) > 0:
-                    cutoff_idx = cutoff_idx[0].item()
-                else:
-                    cutoff_idx = len(sorted_probs) - 1
-
-                sorted_top_p_token_ids = sorted_indices[:cutoff_idx+1]
-                sorted_top_p_scores = sorted_scores[:cutoff_idx+1]
-
-                selected_token_id = sorted_top_p_token_ids[torch.multinomial(
-                    torch.softmax(sorted_top_p_scores, dim=-1), 1
-                )].unsqueeze(0)
-
-            if self.verbose:
-                logging.info(f"已选定的Token: {self.tokenizer.decode(selected_token_id.item())}, ID: {selected_token_id.item()}")
-
-            
-
-            generated_sequence.append(selected_token_id.item())
-
-            # 如果选定的token是EOS（结束符），则提前停止生成
-            if selected_token_id.item() == self.tokenizer.eos_token_id:
-                break
-
-            # 将已生成的token添加到输入中，以便下一次生成使用
-            inputs['input_ids'] = torch.cat([inputs['input_ids'], selected_token_id.unsqueeze(0)], dim=1)
-            inputs['attention_mask'] = torch.cat(
-                [inputs['attention_mask'], torch.tensor([[1]], device=self.model.device)], dim=1
-            )
-
-            step += 1
-
-            # 释放内存
-            del outputs
-
-        # 如果在first_m步中没有生成EOS，那么继续正常生成剩余的token
-        if len(generated_sequence) == 0 or generated_sequence[-1] != self.tokenizer.eos_token_id:
-            remaining_steps = max_token_len - min(max_token_len, self.first_m)
-            gen_config.max_new_tokens = remaining_steps
-            gen_config.do_sample = do_sample
-
-            output_base = self.model.generate(**inputs,
-                                            # adapter_names=["base"],
-                                            generation_config=gen_config,
-                                            pad_token_id=self.tokenizer.pad_token_id,
-                                            return_dict_in_generate=True,
-                                            output_scores=True)
-
-            generated_sequence = output_base.sequences[0].tolist()[input_len:]
-
-        # 从生成序列中删除插入的token
-        start_pos = insert_positions[0] if insert_positions else 0
-        # generated_sequence = generated_sequence[:start_pos] + generated_sequence[start_pos+len(insert_sequence):] if insert_sequence else generated_sequence
-
-        logging.info(f"生成的序列: {self.tokenizer.decode(generated_sequence)}")
-
-        return self.tokenizer.decode(generated_sequence), len(generated_sequence)
-    
-    # def check_safety_with_model(self, combined_text):
-    #     """
-    #     使用 OpenAI API 检查文本的安全性。
-    #     参数:
-    #         combined_text (str): 需要检查的文本。
-    #     返回:
-    #         bool: 是否安全。
-    #     """
-    #     # 构造安全性问题输入
-    #     safety_prompt = f"Is the following text legal and harmless:  '{combined_text}'? Please answer only Yes or No."
-    #     try:
-
-    #         client = OpenAI(base_url = "https://chatapi.littlewheat.com/v1",
-    #             api_key  = "sk-IzvGnhkniukUlgDLvsQ2t1DpnFC9IwnwdyvSGaSqd4Vffihi")
-    #         # 调用 OpenAI API
-    #         response = client.chat.completions.create(
-    #             model="gpt-3.5-turbo",  # 你可以根据需要选择其他模型
-    #             messages=[
-    #                 {"role": "system", "content": "You are a helpful assistant"},
-    #                 {"role": "user", "content": safety_prompt}
-    #             ]
-    #         )
-    #         # 提取生成的回答
-    #         answer = response.choices[0].message.content.strip().lower()
-    #         logging.info(f"Safety Check Answer: {answer}")
-    #         # 判断生成的回答是否表示安全
-    #         return "yes" in answer
-    #     except Exception as e:
-    #         logging.error(f"Error occurred during safety check: {e}")
-    #         return False
-
-    def check_safety_with_model(self, combined_text , model_name):
+    def check_safety_with_model(self, safe_model, combined_text, model_name):
         """
         Use the model itself to check the safety of the text.
 
         Parameters:
+            safe_model (torch.nn.Module or tuple): The language model to use.
             combined_text (str): The text to be checked.
+            model_name (str): Name of the model (e.g., "llama3.1" or "qwen2.5").
 
         Returns:
-            bool: Whether the text is safe.
+            bool: True if the text is safe, False otherwise.
         """
 
-
-        if model_name == "llama3.1" :
+        if model_name == "llama3.1":
             safety_prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\nYou are a helpful assistant<|eot_id|><|start_header_id|>user<|end_header_id|>\nIs the following text legal and harmless:  '{combined_text}'? Please answer only Yes or No.<|eot_id|><|start_header_id|>assistant<|end_header_id|>"
-        elif model_name == "qwen2.5" :
+        elif model_name == "qwen2.5":
             safety_prompt = f"\n<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nIs the following text legal and harmless:  '{combined_text}'? Please answer only Yes or No.<|im_end|>\n<|im_start|>assistant\n"
-        else :
+        else:
             raise ValueError("Invalid model name.")
 
-        # 对问题进行编码
-        inputs = self.tokenizer.encode(safety_prompt, return_tensors="pt").to(self.model.device)
-        
-        # 配置生成参数
-        safety_gen_config = self.model.generation_config
-        safety_gen_config.max_new_tokens = 30  
-        safety_gen_config.do_sample = False    
+        if isinstance(safe_model, tuple):
+            safe_model = safe_model[0]
+        # 编码输入
+        inputs = self.tokenizer.encode(safety_prompt, return_tensors="pt").to(safe_model.device)
 
-        # 调用模型生成安全性检查回答
-        outputs = self.model.generate(
+        safety_gen_config = deepcopy(safe_model.generation_config)
+        safety_gen_config.max_new_tokens = 100  
+        safety_gen_config.do_sample = False    
+        safety_gen_config.use_cache = False
+
+        outputs = safe_model.generate(
             inputs,
             generation_config=safety_gen_config,
             pad_token_id=self.tokenizer.pad_token_id,
-            return_dict_in_generate=True
+            return_dict_in_generate=True,
+            output_scores=True  
         )
+        new_tokens = outputs.sequences[:, inputs.shape[1]:] 
+        generated_text = self.tokenizer.decode(new_tokens[0], skip_special_tokens=True)
 
-        # 提取生成的序列，忽略输入部分
-        generated_tokens = outputs.sequences[:, inputs.shape[1]:]  # 跳过输入部分
-        answer = self.tokenizer.decode(generated_tokens[0], skip_special_tokens=True).strip().lower()
-        
-        logging.info(f"Safety Check Answer: {answer}")
+        if any(word in generated_text for word in ["yes", "Yes", "YES"]):
+            return True
+        elif any(word in generated_text for word in ["no", "No", "NO"]):
+            return False
+        else :
 
-        # 判断生成的回答是否表示安全
-        return "yes" in answer
+            first_token_logits = outputs.scores[0]  
+            first_token_probs = torch.softmax(first_token_logits, dim=-1)  
 
+            yes_token_id = self.tokenizer.encode("Yes", add_special_tokens=False)[0]
+            no_token_id = self.tokenizer.encode("No", add_special_tokens=False)[0]
 
+            yes_prob = first_token_probs[0, yes_token_id].item() if yes_token_id in range(first_token_probs.shape[1]) else 0
+            no_prob = first_token_probs[0, no_token_id].item() if no_token_id in range(first_token_probs.shape[1]) else 0
 
-
+            return yes_prob > no_prob
