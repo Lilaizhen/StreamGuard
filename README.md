@@ -35,17 +35,12 @@ Don't forget to **add your openai api** to get *harmful scores*. If you only wan
 ```
 python defense.py --model_name [YOUR_MODEL_NAME] --attacker [YOUR_ATTACKER_NAME] --defender [YOUR_DEFENDER_NAME] --disable_GPT_judge
 ```
-https://github.com/uw-nsl/SafeDecoding
-## Utility Evaluation
-We integrated **Just-Eval** in ```defense.py```. To evaulate, 
 ```
 cd exp
 python defense.py --model_name [YOUR_MODEL_NAME] --attacker Just-Eval --defender [YOUR_DEFENDER_NAME] --GPT_API [YOUR_OPENAI_API]
 ```
 
-## [Optional] Customize Your Own Experts! 🫨
 
-We provide some out-of-the-box expert models for vicuna, llama2, guanaco, falcon and dolphin in ```lora_modules```. These experts may not be strong enough, and you can of course train your more powerful expert models. To do so, you can
 ```
 cd exp
 python finetune.py --model_name [YOUR_MODEL_NAME] --GPT_API [YOUR_OPENAI_API]
