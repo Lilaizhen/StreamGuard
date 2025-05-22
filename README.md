@@ -1,18 +1,16 @@
-# ExtraThink
-
-This is the official repository for "ExtraThink: Defending Large Language Models Against Jailbreaking Attacks Through Additional Thinking".
+# StreamGuard
 
 ## Getting Start
 
 **Get Code**
 ```
-git clone https://github.com/Lilaizhen/ExtraThink.git
+git clone https://github.com/Lilaizhen/StreamGuard.git
 ```
 **Build Environment**
 ```
-cd ExtraThink
-conda create -n ExtraThink python=3.10
-conda activate ExtraThink
+cd StreamGuard
+conda create -n StreamGuard python=3.10
+conda activate StreamGuard
 pip install -r requirements.txt
 ```
 
@@ -28,7 +26,7 @@ Current Supports:
 
 - **Attacker**: GCG, AutoDAN, DeepInception, AdvBench and your customized dataset.
 
-- **Defender**: ExtraThink, PPL, Self-Exam, Paraphrase, Retokenization, Self-Reminder, ICD.
+- **Defender**: StreamGuard, PPL, Self-Exam, Paraphrase, Retokenization, Self-Reminder, ICD.
 
 Don't forget to **add your openai api** to get *harmful scores*. If you only want to get *ASR*, you can
 
